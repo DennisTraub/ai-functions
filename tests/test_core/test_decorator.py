@@ -489,3 +489,34 @@ class TestInlineKwargsUsage:
 
         # Default tool_executor and conversation_manager are added
         assert len(my_func.config.agent_kwargs) == 0
+
+
+class TestSkillParameter:
+    """Tests for skill= parameter on decorator."""
+
+    def test_skill_sets_config(self):
+        """@ai_function(skill="foo") sets config.skill correctly."""
+
+        @ai_function(skill="data-classifier")
+        def my_func(text: str) -> str:
+            pass
+
+        assert my_func.config.skill == "data-classifier"
+
+    def test_default_skill_is_none(self):
+        """@ai_function() defaults to config.skill == None."""
+
+        @ai_function()
+        def my_func() -> str:
+            """Test docstring."""
+
+        assert my_func.config.skill is None
+
+    def test_bare_decorator_skill_is_none(self):
+        """@ai_function (bare) defaults to config.skill == None."""
+
+        @ai_function
+        def my_func() -> str:
+            """Test docstring."""
+
+        assert my_func.config.skill is None

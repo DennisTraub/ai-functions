@@ -1650,3 +1650,236 @@ class TestSignatureProperty:
 
         assert params == ["a", "b", "c"]
         assert sig.parameters["c"].default == 3.14
+
+
+class TestBuildPromptWithSkill:
+    """Tests for _build_prompt when skill= is configured."""
+
+    @pytest.mark.asyncio
+    async def test_skill_prompt_used(self, tmp_path, monkeypatch):
+        """_build_prompt uses skill loader when config.skill is set."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Test Skill\n\n## Variables\n\n- text (str): Input")
+
+        def func(text: str) -> str:
+            """This docstring should be ignored."""
+            pass
+
+        config = AIFunctionConfig(skill="test-skill")
+        ai_func = AIFunction(func, config)
+        bound_args = ai_func._get_bound_arguments("hello")
+
+        prompt = await ai_func._build_prompt(bound_args)
+
+        assert "# Test Skill" in prompt
+        assert "This docstring should be ignored" not in prompt
+        assert "## Current Input" in prompt
+        assert "- **text**: hello" in prompt
+
+    @pytest.mark.asyncio
+    async def test_function_body_not_called_when_skill_set(self, tmp_path, monkeypatch):
+        """Function body is never called when skill= is set (D1)."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Test Skill")
+
+        call_tracker = MagicMock()
+
+        def func() -> str:
+            """Docstring."""
+            call_tracker()
+            return "should not be used"
+
+        config = AIFunctionConfig(skill="test-skill")
+        ai_func = AIFunction(func, config)
+        bound_args = ai_func._get_bound_arguments()
+
+        await ai_func._build_prompt(bound_args)
+        call_tracker.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docstring_ignored_when_skill_set(self, tmp_path, monkeypatch):
+        """Docstring is not used when skill= is set."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Skill content")
+
+        def func() -> str:
+            """My special docstring."""
+            pass
+
+        config = AIFunctionConfig(skill="my-skill")
+        ai_func = AIFunction(func, config)
+        bound_args = ai_func._get_bound_arguments()
+
+        prompt = await ai_func._build_prompt(bound_args)
+
+        assert "My special docstring" not in prompt
+        assert "# Skill content" in prompt
+
+    @pytest.mark.asyncio
+    async def test_skill_none_preserves_existing_behavior(self):
+        """skill=None (default) preserves existing prompt behavior."""
+
+        def func() -> str:
+            """My docstring prompt."""
+            pass
+
+        config = AIFunctionConfig(skill=None)
+        ai_func = AIFunction(func, config)
+        bound_args = ai_func._get_bound_arguments()
+
+        prompt = await ai_func._build_prompt(bound_args)
+
+        assert "My docstring prompt" in prompt
+
+    @pytest.mark.asyncio
+    async def test_add_prompt_still_runs_on_skill_prompt(self, tmp_path, monkeypatch):
+        """_add_prompt still runs on skill-generated prompt."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Skill")
+
+        def func() -> str:
+            """Docstring."""
+            pass
+
+        config = AIFunctionConfig(skill="test-skill")
+        ai_func = AIFunction(func, config)
+        bound_args = ai_func._get_bound_arguments()
+
+        prompt = await ai_func._build_prompt(bound_args)
+
+        # _add_prompt adds "IMPORTANT: To provide your final result" text
+        assert "IMPORTANT" in prompt
+
+
+class TestBuildPromptWithSkillTypeCompliance:
+    """Tests for type-compliance instructions injected into skill-backed prompts."""
+
+    @pytest.mark.asyncio
+    async def test_skill_int_return_contains_type_section(self, tmp_path, monkeypatch):
+        """Skill + int return type includes Expected Output Type with integer guidance."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "math-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Math Skill")
+
+        def func() -> int:
+            pass
+
+        config = AIFunctionConfig(skill="math-skill")
+        ai_func = AIFunction(func, config)
+        prompt = await ai_func._build_prompt(ai_func._get_bound_arguments())
+
+        assert "## Expected Output Type" in prompt
+        assert "integer" in prompt
+
+    @pytest.mark.asyncio
+    async def test_skill_enum_return_lists_values(self, tmp_path, monkeypatch):
+        """Skill + Enum return type lists enum member values."""
+        import enum
+
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "classify-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Classify")
+
+        class Sentiment(enum.Enum):
+            POSITIVE = "positive"
+            NEGATIVE = "negative"
+
+        def func() -> Sentiment:
+            pass
+
+        config = AIFunctionConfig(skill="classify-skill")
+        ai_func = AIFunction(func, config)
+        prompt = await ai_func._build_prompt(ai_func._get_bound_arguments())
+
+        assert "## Expected Output Type" in prompt
+        assert "`positive`" in prompt
+        assert "`negative`" in prompt
+        assert "exactly one of" in prompt
+
+    @pytest.mark.asyncio
+    async def test_skill_base_model_return_lists_fields(self, tmp_path, monkeypatch):
+        """Skill + BaseModel return type lists model name and field names."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "extract-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Extract")
+
+        prompt = await self._build_skill_prompt(tmp_path, "extract-skill", SampleModel)
+
+        assert "## Expected Output Type" in prompt
+        assert "SampleModel" in prompt
+        assert "**name**" in prompt
+        assert "**value**" in prompt
+
+    @pytest.mark.asyncio
+    async def test_skill_str_return_no_type_section(self, tmp_path, monkeypatch):
+        """Skill + str return type does NOT include Expected Output Type."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "text-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Text Skill")
+
+        def func() -> str:
+            pass
+
+        config = AIFunctionConfig(skill="text-skill")
+        ai_func = AIFunction(func, config)
+        prompt = await ai_func._build_prompt(ai_func._get_bound_arguments())
+
+        assert "## Expected Output Type" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_non_skill_int_return_no_type_section(self):
+        """Non-skill + int return type does NOT include type compliance section."""
+
+        def func() -> int:
+            """Return a number."""
+            pass
+
+        config = AIFunctionConfig(skill=None)
+        ai_func = AIFunction(func, config)
+        prompt = await ai_func._build_prompt(ai_func._get_bound_arguments())
+
+        assert "## Expected Output Type" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_type_compliance_appears_before_important(self, tmp_path, monkeypatch):
+        """Type compliance text appears before IMPORTANT: final answer text."""
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "order-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Order Skill")
+
+        def func() -> int:
+            pass
+
+        config = AIFunctionConfig(skill="order-skill")
+        ai_func = AIFunction(func, config)
+        prompt = await ai_func._build_prompt(ai_func._get_bound_arguments())
+
+        type_pos = prompt.index("## Expected Output Type")
+        important_pos = prompt.index("IMPORTANT")
+        assert type_pos < important_pos
+
+    async def _build_skill_prompt(self, tmp_path, skill_name, return_type):
+        """Helper to build a skill prompt for a given return type."""
+
+        # Create function with the desired return type dynamically
+        def func() -> None:
+            pass
+
+        func.__annotations__["return"] = return_type
+
+        config = AIFunctionConfig(skill=skill_name)
+        ai_func = AIFunction(func, config)
+        return await ai_func._build_prompt(ai_func._get_bound_arguments())

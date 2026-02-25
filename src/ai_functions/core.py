@@ -25,6 +25,7 @@ from strands.tools.tool_provider import ToolProvider
 from strands.types.content import Messages
 from strands.types.tools import AgentTool
 
+from .skills.loader import load_skill
 from .tools.local_python_executor import LocalPythonExecutorTool
 from .types.ai_function import (
     AIFunctionConfig,
@@ -35,7 +36,12 @@ from .types.ai_function import (
 from .types.errors import AIFunctionError, ValidationError
 from .utils._async import run_async
 from .utils._template import Template, generate_template, render_template_with_indent
-from .utils._type import generate_signature_from_model, is_json_serializable_type, is_pydantic_model
+from .utils._type import (
+    generate_signature_from_model,
+    generate_type_compliance_text,
+    is_json_serializable_type,
+    is_pydantic_model,
+)
 from .validation.post_conditions import (
     PostConditionRunner,
     get_failed_results,
@@ -401,6 +407,13 @@ class AIFunction(ToolProvider):
             TypeError: If function returns a non-str/Template value
             Exception: Any exception raised by the wrapped function
         """
+        # If a skill is configured, use it as the prompt source
+        if self.config.skill is not None:
+            prompt = load_skill(self.config.skill, bound_args)
+            prompt += self._type_compliance_prompt()
+            prompt = self._add_prompt(prompt, bound_args)
+            return prompt
+
         # Try function return value first
         if self.is_async:
             result = await self.func(**bound_args)
@@ -540,6 +553,19 @@ class AIFunction(ToolProvider):
             final_answer_signature = generate_signature_from_model(self._structured_output_type)
             parts.append(f"call {final_answer_signature} from inside the python_executor tool")
         return f"\nIMPORTANT: To provide your final result, {' or '.join(parts)}."
+
+    def _type_compliance_prompt(self) -> str:
+        """Generate type-compliance instructions for skill-backed functions.
+
+        Returns an empty string when no skill is configured or when the
+        return type is str (no extra guidance needed).
+        """
+        if self.config.skill is None:
+            return ""
+        text = generate_type_compliance_text(self._return_type)
+        if text is None:
+            return ""
+        return "\n\n" + text
 
     def _add_prompt(self, base_prompt: str, bound_args: dict[str, Any]) -> str:
         """Create the system prompt for the agent."""

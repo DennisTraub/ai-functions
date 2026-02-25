@@ -1,4 +1,5 @@
 .idea/
+.reframing/
 
 *.pyc
 __pycache__/

@@ -94,6 +94,7 @@ class AIFunctionKwargs(TypedDict, total=False):
     name: str | None
     description: str | None
     inputSchema: JSONSchema | None
+    skill: str | None
     agent_kwargs: AgentKwargs
 
 
@@ -134,6 +135,7 @@ class AIFunctionConfig:
     name: str | None = None
     description: str | None = None
     inputSchema: JSONSchema | None = None
+    skill: str | None = None
 
     def __post_init__(self) -> None:
         """Validate and normalize configuration after initialization."""
